@@ -8,28 +8,49 @@
 //   as a token?". Each priced protocol's market-cap / TVL ratio is first winsorised to [0.01, 3]:
 //   beyond that band a ratio says more about what the TVL record covers than about price (one priced
 //   prediction market trades at 400x its recorded TVL). For each category, take the median of its
-//   winsorised ratios, shrunk toward the global median so a thin category cannot shout:
+//   winsorised ratios, shrunk toward the global median so a thin or quarrelsome category cannot
+//   shout:
 //
-//       multiple(cat) = clamp( (n * median(cat) + 8 * median(all)) / (n + 8), 0.03, 2.5 )
+//       multiple(cat) = clamp( (n * median(cat) + w(cat) * median(all)) / (n + w(cat)), 0.03, 2.5 )
+//       w(cat)        = clamp( 5 + 2.5 * spread(cat), 5, 20 )
+//       spread(cat)   = (Q3 - Q1) of the category's winsorised ratios / median(cat)
 //
-//   With a prior weight of 8, a category's own median outweighs the market's only once it has more
-//   than eight priced peers behind it; a category with a single priced peer is priced mostly by the
-//   market as a whole, which is all one peer can honestly support.
+//   The prior weight is earned by the evidence, not fixed: a category whose priced peers agree with
+//   each other (a narrow interquartile band around their median) is trusted sooner, while one whose
+//   peers scatter across the whole band leans harder on the market as a whole. A category with a
+//   single priced peer has no measurable agreement at all, so it is priced mostly by the market —
+//   one observation at the winsorised cap cannot carry a category on its own. The same two numbers
+//   — peer count and spread — grade each category's confidence (high / medium / low), which the
+//   dashboard prints beside every multiple instead of hiding it.
 //
-//   A pre-token protocol's implied value is its TVL priced at that multiple, then adjusted by three
+//   A pre-token protocol's implied value is its TVL priced at that multiple, then adjusted by four
 //   factors that also come from its own record:
 //
 //       growth   = 1 + 0.30 * clamp(change_7d, -60, +150) / 100     (a hot week is worth something,
 //                                                                    a collapsing one is a warning)
+//       momentum = 1 + 0.10 * clamp(change_7d - median change_7d of its category, -40, +40) / 40
+//                                                                  (the week's tide lifts or sinks a
+//                                                                    whole category at once; what marks
+//                                                                    a launch candidate is gaining share
+//                                                                    against its own category, so the
+//                                                                    radar prices that separately)
 //       overdue  = 1 + 0.45 * min(age_days, 1460) / 1460            (the longer a protocol has run at
 //                                                                    size with no token, the more of
 //                                                                    its value a launch would price)
 //       breadth  = 1 + 0.05 * min(chains - 1, 8)                    (more chains, more holders a
 //                                                                    launch would reach)
-//       implied  = round( tvl_usd * multiple * growth * overdue * breadth )
+//       implied  = round( tvl_usd * multiple * growth * momentum * overdue * breadth )
 //
 //   Protocols with no listed_at date are scored at 40% of the overdue cap; protocols with no reported
-//   7-day change get a neutral growth factor of 1.
+//   7-day change get neutral growth and momentum factors of 1.
+//
+// THE SIGNAL
+//   Beside the value, each row carries a 0–100 radar signal: how strong the launch evidence in the
+//   protocol's own record is, independent of how large the protocol is priced. It sums five parts,
+//   each computed from the snapshot: the protocol's 7-day growth percentile inside its own category
+//   (30), its tokenless age against the same 1,460-day cap (25), the confidence of the multiple it
+//   was priced at (20), its size on a log scale from the snapshot's $5M edge to $2B (15), and its
+//   chain breadth (10). The dashboard shows the parts, so the score can be argued with.
 //
 // THE BOARD
 //   The board ranks launch candidates: protocols that record no token and pass the same product test
@@ -63,11 +84,14 @@ export interface Snapshot {
 }
 
 /** The model's version label, printed on the page and in board.json. */
-export const MODEL_VERSION = 'radar-multiple-2.2';
+export const MODEL_VERSION = 'radar-signal-3.0';
 
 /** The model's constants, shipped in the data file so the page can state them exactly. */
 export const MODEL = {
-  prior_weight: 8,
+  prior_base: 5,
+  prior_per_spread: 2.5,
+  prior_min: 5,
+  prior_max: 20,
   ratio_floor: 0.01,
   ratio_cap: 3,
   multiple_floor: 0.03,
@@ -75,14 +99,26 @@ export const MODEL = {
   growth_weight: 0.3,
   growth_floor_pct: -60,
   growth_cap_pct: 150,
+  momentum_weight: 0.1,
+  momentum_cap_pp: 40,
   overdue_weight: 0.45,
   overdue_days_cap: 1460,
   unknown_age_fraction: 0.4,
   chain_weight: 0.05,
   chain_cap: 8,
+  signal_growth_pts: 30,
+  signal_age_pts: 25,
+  signal_confidence_pts: 20,
+  signal_size_pts: 15,
+  signal_breadth_pts: 10,
+  signal_size_floor_usd: 5_000_000,
+  signal_size_cap_usd: 2_000_000_000,
   comparables_shown: 96,
   peers_per_row: 4,
 } as const;
+
+/** How much a category's evidence can be trusted: its priced-peer count and their agreement. */
+export type Confidence = 'high' | 'medium' | 'low';
 
 /** Why a snapshot cannot be scored. */
 export class SnapshotError extends Error {
@@ -166,6 +202,15 @@ function median(values: number[]): number {
   return s.length % 2 === 1 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
 }
 
+/** A quantile of a non-empty list, linearly interpolated between the two nearest ranks. */
+function quantile(values: number[], q: number): number {
+  const s = [...values].sort((a, b) => a - b);
+  if (s.length === 1) return s[0]!;
+  const at = (s.length - 1) * q;
+  const lo = Math.floor(at);
+  return s[lo]! + (s[lo + 1]! - s[lo]!) * (at - lo);
+}
+
 const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 const round2 = (n: number): number => Math.round(n * 100) / 100;
@@ -179,6 +224,22 @@ export interface CategoryMultiple {
   raw_median: number | null;
   multiple: number;
   basis: 'category' | 'shrunk' | 'global';
+  /** The interquartile range of the category's winsorised ratios; null when it has no priced peers. */
+  iqr: number | null;
+  /** iqr / median: how far apart the category's own peers sit, relative to their level. */
+  spread: number | null;
+  /** The shrinkage weight this category's dispersion earned it. */
+  prior_weight: number;
+  /** The confidence grade the peer count and spread together support. */
+  confidence: Confidence;
+}
+
+/** Grade a category's evidence: many peers that agree are high; few peers, or peers scattered
+ *  across the whole winsorised band, are low; everything between is medium. */
+function confidenceFor(peers: number, spread: number | null): Confidence {
+  if (peers >= 8 && spread !== null && spread <= 1.5) return 'high';
+  if (peers <= 2 || spread === null || spread > 4) return 'low';
+  return 'medium';
 }
 
 /** The multiple table derived from the snapshot's priced tokenised protocols. */
@@ -206,13 +267,25 @@ export function deriveMultiples(snapshot: Snapshot): Multiples {
   for (const [cat, ratios] of ratiosByCat) {
     const raw = median(ratios);
     const n = ratios.length;
-    const shrunk = (n * raw + MODEL.prior_weight * globalMedian) / (n + MODEL.prior_weight);
+    const iqr = quantile(ratios, 0.75) - quantile(ratios, 0.25);
+    // Dispersion of a single observation is undefined, not zero: one peer cannot agree with itself.
+    // Two peers get a floor under their spread, because half a range is all the evidence they hold.
+    const spread = n >= 2 && raw > 0 ? iqr / raw : null;
+    const spreadEff = spread === null ? 6 : n === 2 ? Math.max(spread, 3) : spread;
+    const prior = Math.round(
+      Math.min(MODEL.prior_max, Math.max(MODEL.prior_min, MODEL.prior_base + MODEL.prior_per_spread * spreadEff)),
+    );
+    const shrunk = (n * raw + prior * globalMedian) / (n + prior);
     byCategory.set(cat, {
       category: cat,
       peers: n,
       raw_median: round6(raw),
       multiple: round6(Math.min(MODEL.multiple_cap, Math.max(MODEL.multiple_floor, shrunk))),
-      basis: n > MODEL.prior_weight ? 'category' : 'shrunk',
+      basis: n > prior ? 'category' : 'shrunk',
+      iqr: round6(iqr),
+      spread: spread === null ? null : round4(spread),
+      prior_weight: prior,
+      confidence: confidenceFor(n, spread),
     });
   }
   return { global_median: round6(globalMedian), priced_peers: all.length, byCategory };
@@ -228,10 +301,64 @@ export function multipleFor(multiples: Multiples, category: string | null): Cate
     raw_median: null,
     multiple: round6(Math.min(MODEL.multiple_cap, Math.max(MODEL.multiple_floor, multiples.global_median))),
     basis: 'global',
+    iqr: null,
+    spread: null,
+    prior_weight: MODEL.prior_max,
+    confidence: 'low',
   };
 }
 
+// ---------------------------------------------------------------- category change context
+
+/** One category's 7-day weather: every reported change in it, tokenised and pre-token alike. */
+export interface CategoryChange {
+  category: string;
+  /** The category's median 7-day change; null when nobody in it reports one. */
+  median_change: number | null;
+  /** Every reported change in the category, ascending, for percentiles. */
+  changes: number[];
+}
+
+/** Build every category's change context from the snapshot's own records. */
+export function deriveCategoryChanges(snapshot: Snapshot): Map<string, CategoryChange> {
+  const byCat = new Map<string, number[]>();
+  for (const p of snapshot.protocols) {
+    if (p.change_7d === null) continue;
+    const cat = p.category ?? '';
+    const list = byCat.get(cat);
+    if (list === undefined) byCat.set(cat, [p.change_7d]);
+    else list.push(p.change_7d);
+  }
+  const out = new Map<string, CategoryChange>();
+  for (const [cat, changes] of byCat) {
+    const sorted = [...changes].sort((a, b) => a - b);
+    out.set(cat, { category: cat, median_change: round2(median(sorted)), changes: sorted });
+  }
+  return out;
+}
+
+/** Where a value sits inside a sorted list, as a 0..1 fraction; ties count half. */
+function percentileOf(sorted: number[], value: number): number {
+  if (sorted.length === 0) return 0.5;
+  let below = 0;
+  let equal = 0;
+  for (const v of sorted) {
+    if (v < value) below++;
+    else if (v === value) equal++;
+  }
+  return (below + 0.5 * equal) / sorted.length;
+}
+
 // ---------------------------------------------------------------- scoring
+
+/** The five parts of one row's radar signal, each with the points it earned. */
+export interface SignalParts {
+  growth: number;
+  age: number;
+  confidence: number;
+  size: number;
+  breadth: number;
+}
 
 /** The full score of one pre-token protocol: the implied value and every component that made it. */
 export interface Score {
@@ -239,37 +366,87 @@ export interface Score {
   multiple: number;
   multiple_basis: 'category' | 'shrunk' | 'global';
   multiple_peers: number;
+  multiple_confidence: Confidence;
   growth_pct: number | null;
   growth_factor: number;
+  /** This protocol's 7-day change minus its category's median change, in percentage points. */
+  momentum_pp: number | null;
+  momentum_factor: number;
   overdue_factor: number;
   chain_factor: number;
   implied_value_usd: number;
+  signal: number;
+  signal_parts: SignalParts;
+}
+
+/** The signal's confidence points for one grade: the full twenty only when the multiple is well evidenced. */
+function confidencePoints(confidence: Confidence): number {
+  if (confidence === 'high') return MODEL.signal_confidence_pts;
+  if (confidence === 'medium') return Math.round(MODEL.signal_confidence_pts * 0.6);
+  return Math.round(MODEL.signal_confidence_pts * 0.25);
 }
 
 /** Score one protocol under the model. Pure: the same record always scores the same. */
-export function scoreProtocol(p: SnapshotProtocol, asOf: string, multiples: Multiples): Score {
+export function scoreProtocol(
+  p: SnapshotProtocol,
+  asOf: string,
+  multiples: Multiples,
+  changes: Map<string, CategoryChange>,
+): Score {
   const mult = multipleFor(multiples, p.category);
+  const catChange = changes.get(p.category ?? '');
   const age = ageDays(asOf, p.listed_at);
   let growthPct: number | null = null;
   let growthFactor = 1;
+  let momentumPp: number | null = null;
+  let momentumFactor = 1;
   if (p.change_7d !== null) {
     growthPct = round2(Math.min(MODEL.growth_cap_pct, Math.max(MODEL.growth_floor_pct, p.change_7d)));
     growthFactor = 1 + MODEL.growth_weight * (growthPct / 100);
+    if (catChange !== undefined && catChange.median_change !== null) {
+      momentumPp = round2(
+        Math.min(MODEL.momentum_cap_pp, Math.max(-MODEL.momentum_cap_pp, p.change_7d - catChange.median_change)),
+      );
+      momentumFactor = 1 + MODEL.momentum_weight * (momentumPp / MODEL.momentum_cap_pp);
+    }
   }
   const ageFraction = age === null ? MODEL.unknown_age_fraction : Math.min(age, MODEL.overdue_days_cap) / MODEL.overdue_days_cap;
   const overdueFactor = 1 + MODEL.overdue_weight * ageFraction;
   const chainFactor = 1 + MODEL.chain_weight * Math.min(Math.max(p.chains.length - 1, 0), MODEL.chain_cap);
-  const implied = Math.max(1, Math.round(p.tvl_usd * mult.multiple * growthFactor * overdueFactor * chainFactor));
+  const implied = Math.max(1, Math.round(p.tvl_usd * mult.multiple * growthFactor * momentumFactor * overdueFactor * chainFactor));
+
+  const growthPts =
+    p.change_7d === null || catChange === undefined
+      ? Math.round(MODEL.signal_growth_pts * 0.4)
+      : Math.round(MODEL.signal_growth_pts * percentileOf(catChange.changes, p.change_7d));
+  const agePts =
+    age === null
+      ? Math.round(MODEL.signal_age_pts * MODEL.unknown_age_fraction)
+      : Math.round(MODEL.signal_age_pts * (Math.min(age, MODEL.overdue_days_cap) / MODEL.overdue_days_cap));
+  const sizeSpan = Math.log10(MODEL.signal_size_cap_usd) - Math.log10(MODEL.signal_size_floor_usd);
+  const sizeFrac = Math.min(1, Math.max(0, (Math.log10(Math.max(p.tvl_usd, 1)) - Math.log10(MODEL.signal_size_floor_usd)) / sizeSpan));
+  const parts: SignalParts = {
+    growth: growthPts,
+    age: agePts,
+    confidence: confidencePoints(mult.confidence),
+    size: Math.round(MODEL.signal_size_pts * sizeFrac),
+    breadth: Math.round(MODEL.signal_breadth_pts * (Math.min(Math.max(p.chains.length - 1, 0), MODEL.chain_cap) / MODEL.chain_cap)),
+  };
   return {
     age_days: age,
     multiple: mult.multiple,
     multiple_basis: mult.basis,
     multiple_peers: mult.peers,
+    multiple_confidence: mult.confidence,
     growth_pct: growthPct,
     growth_factor: round4(growthFactor),
+    momentum_pp: momentumPp,
+    momentum_factor: round4(momentumFactor),
     overdue_factor: round4(overdueFactor),
     chain_factor: round4(chainFactor),
     implied_value_usd: implied,
+    signal: parts.growth + parts.age + parts.confidence + parts.size + parts.breadth,
+    signal_parts: parts,
   };
 }
 
@@ -374,26 +551,35 @@ function weeklyAction(category: string | null, name: string): string {
 /**
  * One protocol's farm plan: concrete steps with a cost and a time on each, parameterised by the
  * protocol's own record (name, category, chains, TVL, age) and varied by a seed drawn from its slug,
- * so two protocols in the same category do not read as photocopies.
+ * so two protocols in the same category do not read as photocopies. The shape is a real campaign:
+ * set up, enter in two tranches a week apart, keep a weekly cadence, review at the midpoint, hold
+ * to the end of the window, then claim safely and log everything.
  */
 export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
   const seed = slugSeed(p.slug);
   const chain = p.chains.length > 0 ? p.chains[0]! : 'its home chain';
   const gas = gasFor(chain);
   const capital = capitalFor(p.tvl_usd);
+  const firstTranche = Math.round(capital * 0.6);
+  const secondTranche = capital - firstTranche;
   const hold = holdDaysFor(age);
+  const weeks = Math.max(2, Math.round(hold / 7));
+  const midDay = Math.round(hold / 2);
   const walletLines = [
     `Start from a fresh wallet funded only with what this plan needs, and store its recovery phrase offline, never in a screenshot or a cloud note`,
     `Use one dedicated wallet for ${p.name} alone, so its activity is clean to read and easy to unwind later`,
   ];
   const steps: string[] = [];
   steps.push(`${walletLines[pick(seed, 1, walletLines.length)]}. Cost: about $${gas} of gas to make the first transaction on ${chain}. Time: 10 minutes.`);
-  steps.push(`${coreAction(p.category, p.name, chain, capital)}. Cost: $${capital} of capital plus about $${gas * 2} of gas. Time: 20 minutes to set up.`);
+  steps.push(`${coreAction(p.category, p.name, chain, firstTranche)} — this is tranche one, about 60% of the plan's capital; the rest follows in a week so the wallet's history is not a single day. Cost: $${firstTranche} of capital plus about $${gas * 2} of gas. Time: 20 minutes to set up.`);
   if (p.chains.length >= 3) {
     const second = p.chains[1 + pick(seed, 2, Math.min(3, p.chains.length - 1))]!;
-    steps.push(`Repeat a smaller version on ${second}: move about $${Math.max(25, Math.floor(capital / 3))} through ${p.name} there too, because multi-chain users are the ones launches usually weight most. Cost: about $${gasFor(second) * 2} of gas plus bridge fees near $2. Time: 15 minutes.`);
+    steps.push(`On day 7, repeat a smaller version on ${second}: move about $${Math.max(25, Math.floor(capital / 3))} through ${p.name} there too, because multi-chain users are the ones launches usually weight most. Cost: about $${gasFor(second) * 2} of gas plus bridge fees near $2. Time: 15 minutes.`);
+  } else {
+    steps.push(`On day 7, add tranche two: another $${secondTranche} into the same ${p.name} position on ${chain}, so the account's activity spans two weekly snapshots instead of one. Cost: $${secondTranche} of capital plus about $${gas} of gas. Time: 10 minutes.`);
   }
-  steps.push(`Once a week, ${weeklyAction(p.category, p.name)}. Cost: about $${gas} of gas a week. Time: 10 minutes a week.`);
+  steps.push(`Once a week for the next ${weeks} weeks, ${weeklyAction(p.category, p.name)}. Cost: about $${gas} of gas a week, near $${gas * weeks} across the window. Time: 10 minutes a week.`);
+  steps.push(`At the midpoint, day ${midDay}, do a review pass: open ${p.name}'s official site from your own bookmark, confirm the position is still live and its balance reads as expected, and screenshot it for the journal. Cost: nothing but about $${gas} of gas if the review needs a transaction. Time: 10 minutes.`);
   steps.push(`Hold the position for at least ${hold} days so the activity spans more than one weekly snapshot of the protocol. Cost: the $${capital} stays committed and carries the protocol's own smart-contract risk. Time: ${hold} days.`);
   const exitLines = [
     `When you finish, check ${p.name}'s own site and verified socials for a points or rewards page and claim only from links published there; a claim never asks for a fee or a signature you cannot read`,
@@ -420,12 +606,16 @@ export interface BoardRow {
   token_status: 'pre-token';
   watchlist: boolean;
   implied_value_usd: number;
+  signal: number;
   model: {
     multiple: number;
     multiple_basis: 'category' | 'shrunk' | 'global';
     multiple_peers: number;
+    multiple_confidence: Confidence;
     growth_pct: number | null;
     growth_factor: number;
+    momentum_pp: number | null;
+    momentum_factor: number;
     overdue_factor: number;
     chain_factor: number;
   };
@@ -433,10 +623,10 @@ export interface BoardRow {
 }
 
 /** Rank the board: every watchlist slug plus every launch candidate, by implied value. */
-export function buildBoard(snapshot: Snapshot, multiples: Multiples): BoardRow[] {
+export function buildBoard(snapshot: Snapshot, multiples: Multiples, changes: Map<string, CategoryChange>): BoardRow[] {
   const onWatchlist = new Set(snapshot.watchlist);
   const chosen = snapshot.protocols.filter((p) => onWatchlist.has(p.slug) || isLaunchCandidate(p));
-  const scored = chosen.map((p) => ({ p, score: scoreProtocol(p, snapshot.as_of, multiples) }));
+  const scored = chosen.map((p) => ({ p, score: scoreProtocol(p, snapshot.as_of, multiples, changes) }));
   scored.sort((a, b) => b.score.implied_value_usd - a.score.implied_value_usd || bySlugAsc(a.p.slug, b.p.slug));
   return scored.map((s, i) => ({
     rank: i + 1,
@@ -451,12 +641,16 @@ export function buildBoard(snapshot: Snapshot, multiples: Multiples): BoardRow[]
     token_status: 'pre-token',
     watchlist: onWatchlist.has(s.p.slug),
     implied_value_usd: s.score.implied_value_usd,
+    signal: s.score.signal,
     model: {
       multiple: s.score.multiple,
       multiple_basis: s.score.multiple_basis,
       multiple_peers: s.score.multiple_peers,
+      multiple_confidence: s.score.multiple_confidence,
       growth_pct: s.score.growth_pct,
       growth_factor: s.score.growth_factor,
+      momentum_pp: s.score.momentum_pp,
+      momentum_factor: s.score.momentum_factor,
       overdue_factor: s.score.overdue_factor,
       chain_factor: s.score.chain_factor,
     },
@@ -519,9 +713,12 @@ export function peersFor(p: SnapshotProtocol, snapshot: Snapshot): PeerRow[] {
 
 // ---------------------------------------------------------------- the dashboard's data
 
-/** A board row as the dashboard carries it: the board row plus its live peers. */
+/** A board row as the dashboard carries it: the board row plus its live peers and signal parts. */
 export interface DataRow extends BoardRow {
   peers: PeerRow[];
+  signal_parts: SignalParts;
+  /** The median 7-day change of this row's own category, for the momentum readout. */
+  category_median_change: number | null;
 }
 
 /** Everything the dashboard renders, computed once from the snapshot. */
@@ -531,7 +728,10 @@ export interface RadarData {
   floor_usd: number;
   model_version: string;
   model: {
-    prior_weight: number;
+    prior_base: number;
+    prior_per_spread: number;
+    prior_min: number;
+    prior_max: number;
     ratio_floor: number;
     ratio_cap: number;
     multiple_floor: number;
@@ -539,10 +739,17 @@ export interface RadarData {
     growth_weight: number;
     growth_floor_pct: number;
     growth_cap_pct: number;
+    momentum_weight: number;
+    momentum_cap_pp: number;
     overdue_weight: number;
     overdue_days_cap: number;
     chain_weight: number;
     chain_cap: number;
+    signal_growth_pts: number;
+    signal_age_pts: number;
+    signal_confidence_pts: number;
+    signal_size_pts: number;
+    signal_breadth_pts: number;
     global_median: number;
     priced_peers: number;
     categories: CategoryMultiple[];
@@ -562,7 +769,8 @@ export interface RadarData {
 /** Build the board and the dashboard's data from one snapshot. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; data: RadarData } {
   const multiples = deriveMultiples(snapshot);
-  const board = buildBoard(snapshot, multiples);
+  const changes = deriveCategoryChanges(snapshot);
+  const board = buildBoard(snapshot, multiples, changes);
   const comparables = buildComparables(snapshot);
   const bySlugMap = new Map(snapshot.protocols.map((p) => [p.slug, p]));
   const categories = [...multiples.byCategory.values()]
@@ -574,7 +782,10 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; data: Radar
     floor_usd: snapshot.floor_usd,
     model_version: MODEL_VERSION,
     model: {
-      prior_weight: MODEL.prior_weight,
+      prior_base: MODEL.prior_base,
+      prior_per_spread: MODEL.prior_per_spread,
+      prior_min: MODEL.prior_min,
+      prior_max: MODEL.prior_max,
       ratio_floor: MODEL.ratio_floor,
       ratio_cap: MODEL.ratio_cap,
       multiple_floor: MODEL.multiple_floor,
@@ -582,10 +793,17 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; data: Radar
       growth_weight: MODEL.growth_weight,
       growth_floor_pct: MODEL.growth_floor_pct,
       growth_cap_pct: MODEL.growth_cap_pct,
+      momentum_weight: MODEL.momentum_weight,
+      momentum_cap_pp: MODEL.momentum_cap_pp,
       overdue_weight: MODEL.overdue_weight,
       overdue_days_cap: MODEL.overdue_days_cap,
       chain_weight: MODEL.chain_weight,
       chain_cap: MODEL.chain_cap,
+      signal_growth_pts: MODEL.signal_growth_pts,
+      signal_age_pts: MODEL.signal_age_pts,
+      signal_confidence_pts: MODEL.signal_confidence_pts,
+      signal_size_pts: MODEL.signal_size_pts,
+      signal_breadth_pts: MODEL.signal_breadth_pts,
       global_median: multiples.global_median,
       priced_peers: multiples.priced_peers,
       categories,
@@ -598,7 +816,16 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; data: Radar
       watchlist: snapshot.watchlist.length,
       comparables: comparables.length,
     },
-    rows: board.map((row) => ({ ...row, peers: peersFor(bySlugMap.get(row.slug)!, snapshot) })),
+    rows: board.map((row) => {
+      const p = bySlugMap.get(row.slug)!;
+      const score = scoreProtocol(p, snapshot.as_of, multiples, changes);
+      return {
+        ...row,
+        peers: peersFor(p, snapshot),
+        signal_parts: score.signal_parts,
+        category_median_change: changes.get(row.category ?? '')?.median_change ?? null,
+      };
+    }),
     comparables,
   };
   return { board, data };

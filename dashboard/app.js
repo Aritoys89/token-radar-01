@@ -65,10 +65,11 @@ function shell() {
     <p class="lede">Every protocol in the snapshot that records no token and is a launch candidate in its own
       right — not an exchange, not a wrapped or staked product of one that trades — ranked by an
       <b>implied value</b>: its TVL priced at the market-cap multiple its own category's tokenised protocols
-      actually trade at, adjusted for its 7-day growth, how long it has run tokenless, and how many chains
-      it spans. Each row carries the plan to farm it. Implied values are this radar's own model output,
-      as of <b>${esc(D.as_of)}</b>; they say what a token would be worth if the record stayed as it is,
-      never whether or when one comes.</p>
+      actually trade at, adjusted for its 7-day growth, how that growth compares with its own category's
+      week, how long it has run tokenless, and how many chains it spans. Each row also carries a
+      <b>radar signal</b> (0–100) grading the launch evidence in its record, and the plan to farm it.
+      Implied values are this radar's own model output, as of <b>${esc(D.as_of)}</b>; they say what a token
+      would be worth if the record stayed as it is, never whether or when one comes.</p>
     <div class="stats">
       <div class="stat"><b>${s.protocols}</b><span>protocols scanned</span></div>
       <div class="stat"><b>${s.pre_token}</b><span>record no token</span></div>
@@ -76,6 +77,10 @@ function shell() {
       <div class="stat amber"><b>${s.watchlist} / ${s.watchlist}</b><span>watchlist covered</span></div>
       <div class="stat"><b>${s.comparables}</b><span>tokenised comparables</span></div>
       <div class="stat"><b>${multText(D.model.global_median)}</b><span>median mcap / TVL</span></div>
+    </div>
+    <div class="growers" id="growers">
+      <span class="growers-label">Growing against the week — top 7-day TVL gains on the board</span>
+      ${[...D.rows].filter((r) => r.change_7d !== null).sort((a, b) => b.change_7d - a.change_7d || a.rank - b.rank).slice(0, 5).map((r) => `<button class="chip" data-chip="${esc(r.slug)}"><span class="chip-name">${esc(r.name)}</span><span class="pos">+${r.change_7d.toFixed(1)}%</span><span class="chip-cat">${esc(r.category || '')}</span></button>`).join('')}
     </div>
   </header>
   <div class="wrap">
@@ -120,6 +125,7 @@ const BOARD_COLS = [
   { key: 'change', label: '7d', num: true },
   { key: 'age', label: 'Tokenless', num: true },
   { key: 'multiple', label: 'Multiple', num: true },
+  { key: 'signal', label: 'Signal', num: true },
   { key: 'value', label: 'Implied value', num: true },
 ];
 
@@ -133,6 +139,7 @@ function boardValue(r, key) {
     case 'change': return r.change_7d === null ? -Infinity : r.change_7d;
     case 'age': return r.age_days === null ? -1 : r.age_days;
     case 'multiple': return r.model.multiple;
+    case 'signal': return r.signal;
     case 'value': return r.implied_value_usd;
     default: return r.rank;
   }
@@ -167,11 +174,12 @@ function renderBoard() {
       <td class="rank">${r.rank}</td>
       <td class="name-cell"><span class="pname">${esc(r.name)}</span>${r.watchlist ? '<span class="badge wl">WATCHLIST</span>' : ''}<br><span class="pslug">${esc(r.slug)}</span></td>
       <td class="cat">${esc(r.category || '—')}</td>
-      <td class="chains">${esc(r.chains.slice(0, 2).join(', '))}${r.chains.length > 2 ? ` +${r.chains.length - 2}` : ''}</td>
+      <td class="chains">${esc(r.chains.length <= 2 ? r.chains.join(', ') : `${r.chains[0]} +${r.chains.length - 1}`)}</td>
       <td class="num">${money(r.tvl_usd)}</td>
       <td class="num">${pct(r.change_7d)}</td>
       <td class="num">${ageText(r.age_days)}</td>
       <td class="num mult">${multText(r.model.multiple)}</td>
+      <td class="sig-cell"><span class="sig-num">${r.signal}</span><span class="sig-bar"><i style="width:${r.signal}%"></i></span></td>
       <td class="val-cell"><div class="val-top"><span class="val-num">${money(r.implied_value_usd)}</span></div>
         <div class="val-bar"><i style="width:${maxVal > 0 ? Math.max(2, (r.implied_value_usd / maxVal) * 100) : 0}%"></i></div></td>
     </tr>`).join('');
@@ -269,6 +277,12 @@ function factorRow(label, note, factor, scale, cls) {
   <p class="factor-note" style="margin:-2px 0 6px">${esc(note)}</p>`;
 }
 
+function signalRow(label, pts, max, note) {
+  const w = Math.max(2, Math.min(100, (pts / max) * 100));
+  return `<div class="factor"><span class="fname">${esc(label)}</span><span class="track"><i class="sig" style="width:${w}%"></i></span><span class="fval">${pts} / ${max}</span></div>
+  <p class="factor-note" style="margin:-2px 0 6px">${esc(note)}</p>`;
+}
+
 function renderDetail() {
   const el = document.getElementById('detail');
   if (state.selectedLive) {
@@ -290,7 +304,7 @@ function renderDetail() {
         <h4 class="sub">Why it is here</h4>
         <p style="color:var(--dim);max-width:70ch">This protocol already trades, so the radar does not rank it as a launch.
         It is one of the ${D.model.priced_peers} priced protocols whose market-cap / TVL ratios set the multiples:
-        ${r.category ? `in <b>${esc(r.category)}</b>, ${mult ? mult.peers + ' priced peer' + (mult.peers === 1 ? '' : 's') + ' give a winsorised median of ' + multText(mult.raw_median) + ', used as ' + multText(mult.multiple) + ' after shrinkage toward the global median' : 'the category uses the global median of ' + multText(D.model.global_median)}` : 'uncategorised protocols use the global median of ' + multText(D.model.global_median)}.
+        ${r.category ? `in <b>${esc(r.category)}</b>, ${mult ? mult.peers + ' priced peer' + (mult.peers === 1 ? '' : 's') + ' give a winsorised median of ' + multText(mult.raw_median) + ', used as ' + multText(mult.multiple) + ' after shrinkage toward the global median with the prior weight of ' + mult.prior_weight + ' its peer spread earned (confidence ' + mult.confidence + ')' : 'the category uses the global median of ' + multText(D.model.global_median)}` : 'uncategorised protocols use the global median of ' + multText(D.model.global_median)}.
         Its own ratio is ${multText(r.ratio)}.</p>
       </div><div class="detail-side">
         <h4 class="sub" style="margin-top:0">Chains</h4>
@@ -301,6 +315,12 @@ function renderDetail() {
   const r = bySlug.get(state.selected || '');
   if (!r) { el.className = 'panel'; el.innerHTML = ''; return; }
   const m = r.model;
+  const M = D.model;
+  const catInfo = M.categories.find((c) => c.category === (r.category || ''));
+  const sp = r.signal_parts;
+  const momentumNote = m.momentum_pp === null
+    ? (r.change_7d === null ? 'no 7-day change reported: neutral' : 'its category reports no median change: neutral')
+    : `${r.change_7d.toFixed(1)}% against a category median of ${r.category_median_change === null ? 'n/a' : r.category_median_change.toFixed(1) + '%'}: ${m.momentum_pp > 0 ? `+${m.momentum_pp.toFixed(1)} points of category share gained` : m.momentum_pp < 0 ? `${m.momentum_pp.toFixed(1)} points of category share lost` : 'level with its category'}, clamped to ±${M.momentum_cap_pp}`;
   const peers = r.peers && r.peers.length > 0 ? `
     <h4 class="sub">Live peers in ${esc(r.category || 'its category')} — the check on the multiple</h4>
     <table class="peers"><thead><tr><th>Protocol</th><th class="num">TVL</th><th class="num">Mcap</th><th class="num">Mcap/TVL</th></tr></thead>
@@ -319,11 +339,19 @@ function renderDetail() {
         <div><span>Chains</span><b>${r.chains.length}</b></div>
       </div>
       <h4 class="sub">How this value is built</h4>
-      ${factorRow('Category multiple', `${r.category || 'Uncategorised'}: ${m.multiple_peers} priced peer${m.multiple_peers === 1 ? '' : 's'}, ${m.multiple_basis === 'category' ? 'category median used directly' : m.multiple_basis === 'shrunk' ? 'category median shrunk toward the global median' : 'global median (no priced peers in category)'}`, m.multiple, (f) => f / D.model.multiple_cap, 'base')}
+      ${factorRow('Category multiple', `${r.category || 'Uncategorised'}: ${m.multiple_peers} priced peer${m.multiple_peers === 1 ? '' : 's'}, ${m.multiple_basis === 'category' ? 'category median used directly' : m.multiple_basis === 'shrunk' ? 'category median shrunk toward the global median' : 'global median (no priced peers in category)'} · confidence ${m.multiple_confidence}${catInfo && catInfo.spread !== null ? `, peer spread ${catInfo.spread.toFixed(2)}` : ''}`, m.multiple, (f) => f / D.model.multiple_cap, 'base')}
       ${factorRow('Growth', r.change_7d === null ? 'no 7-day change reported: neutral' : `7-day TVL change ${r.change_7d.toFixed(1)}%, clamped to [${D.model.growth_floor_pct}, +${D.model.growth_cap_pct}]`, m.growth_factor, (f) => (f - 0.8) / 0.7)}
+      ${factorRow('Momentum vs category', momentumNote, m.momentum_factor, (f) => (f - (1 - M.momentum_weight)) / (2 * M.momentum_weight))}
       ${factorRow('Overdue', r.age_days === null ? 'no listing date in the record: scored at 40% of the cap' : `${r.age_days} days at size with no token, against a ${D.model.overdue_days_cap}-day cap`, m.overdue_factor, (f) => (f - 1) / D.model.overdue_weight)}
       ${factorRow('Chain breadth', `${r.chains.length} chain${r.chains.length === 1 ? '' : 's'}: ${r.chains.slice(0, 5).join(', ')}${r.chains.length > 5 ? '…' : ''}`, m.chain_factor, (f) => (f - 1) / (D.model.chain_weight * D.model.chain_cap))}
-      <p class="factor-note">TVL ${money(r.tvl_usd)} × the four factors = <b style="color:var(--text)">${money(r.implied_value_usd)}</b> implied. The same formula scores every row; no name is weighted by hand.</p>
+      <p class="factor-note">TVL ${money(r.tvl_usd)} × the five factors = <b style="color:var(--text)">${money(r.implied_value_usd)}</b> implied. The same formula scores every row; no name is weighted by hand.</p>
+      <h4 class="sub">Radar signal — ${r.signal} / 100 <span class="conf conf-${m.multiple_confidence}">multiple confidence: ${m.multiple_confidence}</span></h4>
+      ${signalRow('Growth vs category', sp.growth, M.signal_growth_pts, r.change_7d === null ? 'no 7-day change reported: scored at 40% of the part' : `its 7-day change sits at the ${Math.round((sp.growth / M.signal_growth_pts) * 100)}th percentile of ${r.category || 'its category'}`)}
+      ${signalRow('Tokenless age', sp.age, M.signal_age_pts, r.age_days === null ? 'no listing date in the record: scored at 40% of the cap' : `${r.age_days} days run at size with no token, against the ${M.overdue_days_cap}-day cap`)}
+      ${signalRow('Multiple confidence', sp.confidence, M.signal_confidence_pts, `${m.multiple_peers} priced peer${m.multiple_peers === 1 ? '' : 's'} behind the multiple${catInfo && catInfo.spread !== null ? `, their ratios spread ${catInfo.spread.toFixed(2)} around the median` : ''}`)}
+      ${signalRow('Size', sp.size, M.signal_size_pts, `TVL ${money(r.tvl_usd)} on a log scale from the snapshot's $5M edge to $2B`)}
+      ${signalRow('Chain breadth', sp.breadth, M.signal_breadth_pts, `${r.chains.length} chain${r.chains.length === 1 ? '' : 's'} a launch would reach on day one`)}
+      <p class="factor-note">The signal grades the evidence in the record, not the price: a small protocol can out-signal a large one, and the board still ranks by implied value.</p>
       ${peers}
     </div><div class="detail-side">
       <h4 class="sub" style="margin-top:0">Farm plan — ${r.farm_steps.length} steps</h4>
@@ -352,21 +380,25 @@ function renderModel() {
         token. Each priced protocol's market-cap / TVL ratio is first <b>winsorised to [${M.ratio_floor}, ${M.ratio_cap}]</b> — beyond
         that band a ratio says more about what the TVL record covers than about price. For each category the
         radar then takes the <b>median</b> of its winsorised ratios and <b>shrinks it toward the global median</b>
-        (${multText(M.global_median)} across ${M.priced_peers} priced protocols) with a prior weight of
-        ${M.prior_weight}, so a category's own median outweighs the market's only once it has more priced peers
-        than that — and one wild peer cannot shout down the market. The result is clamped to
+        (${multText(M.global_median)} across ${M.priced_peers} priced protocols). The shrinkage weight is not fixed:
+        it is <b>${M.prior_base} + ${M.prior_per_spread} × the category's spread</b> (its ratios' interquartile range over
+        their median), clamped to [${M.prior_min}, ${M.prior_max}] — a category whose peers agree is trusted sooner, one
+        whose peers scatter leans on the market, and a category with a single priced peer, whose agreement
+        cannot be measured at all, is priced mostly by the market as a whole. The result is clamped to
         [${M.multiple_floor}, ${M.multiple_cap}]. A pre-token protocol is then priced as:</p>
-      <div class="formula">implied = TVL × category multiple × growth × overdue × breadth</div>
+      <div class="formula">implied = TVL × category multiple × growth × momentum × overdue × breadth</div>
       <ul>
         <li><b>Growth</b> = 1 + ${M.growth_weight} × clamp(7-day TVL change, ${M.growth_floor_pct}%, +${M.growth_cap_pct}%) / 100 — momentum counts, a collapse warns, and one wild week cannot dominate.</li>
+        <li><b>Momentum</b> = 1 + ${M.momentum_weight} × clamp(own 7-day change − its category's median change, ±${M.momentum_cap_pp} points) / ${M.momentum_cap_pp} — the week's tide lifts or sinks a whole category at once (the snapshot's week was a falling one: the median protocol shrank), so the radar prices separately the share a protocol is gaining or losing against its own category.</li>
         <li><b>Overdue</b> = 1 + ${M.overdue_weight} × min(days tokenless, ${M.overdue_days_cap}) / ${M.overdue_days_cap} — the longer a protocol has run at size with no token, the more of its value a launch would price in. No listing date in the record scores at 40% of the cap.</li>
         <li><b>Breadth</b> = 1 + ${M.chain_weight} × min(chains − 1, ${M.chain_cap}) — a launch reaches holders on every chain the protocol already serves.</li>
+        <li><b>The signal</b> (0–100, shown per row) grades the launch evidence, not the price: growth percentile inside its own category (${M.signal_growth_pts}), tokenless age (${M.signal_age_pts}), the confidence of the multiple it was priced at (${M.signal_confidence_pts}), size on a log scale (${M.signal_size_pts}) and chain breadth (${M.signal_breadth_pts}). Confidence itself is graded from the category table below: at least 8 priced peers whose spread stays under 1.5 is high; at most 2 peers, or a spread over 4, is low.</li>
         <li><b>Who is on the board:</b> protocols that record no token and pass the watchlist's own product test — not an exchange, not a bridge or staking wrapper of an asset that already trades, not a versioned pool of another protocol. All ${D.stats.watchlist} watchlist protocols are on it; the rest are the same test applied below the $${(D.floor_usd / 1e6).toFixed(0)}M floor, down to the snapshot's $5M edge.</li>
         <li><b>Who is not:</b> the ${D.stats.tokenised} tokenised protocols. They sit in the “Already tokenised” view as comparables — evidence, not candidates.</li>
       </ul>
       <h4 class="sub">Category multiples in use</h4>
-      <table class="mult"><thead><tr><th>Category</th><th class="num">Priced peers</th><th class="num">Median ratio</th><th class="num">Multiple used</th><th>Basis</th></tr></thead>
-      <tbody>${cats.map((c) => `<tr><td>${esc(c.category)}</td><td class="num">${c.peers}</td><td class="num mult">${c.raw_median === null ? '—' : multText(c.raw_median)}</td><td class="num mult">${multText(c.multiple)}</td><td style="color:var(--dim)">${c.basis === 'category' ? 'category median' : 'shrunk to global'}</td></tr>`).join('')}</tbody></table>
+      <table class="mult"><thead><tr><th>Category</th><th class="num">Priced peers</th><th class="num">Median ratio</th><th class="num">Spread</th><th class="num">Multiple used</th><th>Confidence</th><th>Basis</th></tr></thead>
+      <tbody>${cats.map((c) => `<tr><td>${esc(c.category)}</td><td class="num">${c.peers}</td><td class="num mult">${c.raw_median === null ? '—' : multText(c.raw_median)}</td><td class="num">${c.spread === null ? '—' : c.spread.toFixed(2)}</td><td class="num mult">${multText(c.multiple)}</td><td><span class="conf conf-${c.confidence}">${c.confidence}</span></td><td style="color:var(--dim)">${c.basis === 'category' ? 'category median' : 'shrunk to global'}</td></tr>`).join('')}</tbody></table>
     </div>`;
 }
 
@@ -397,6 +429,19 @@ function applyHash() {
 
 function wire() {
   document.getElementById('q').addEventListener('input', (e) => { state.q = e.target.value; render(); });
+  for (const chip of document.querySelectorAll('.chip[data-chip]')) {
+    chip.addEventListener('click', () => {
+      const slug = chip.getAttribute('data-chip');
+      if (!bySlug.has(slug)) return;
+      state.view = 'board';
+      state.selected = slug;
+      state.selectedLive = null;
+      location.hash = '#/p/' + encodeURIComponent(slug);
+      applySeg();
+      render();
+      scrollToDetail();
+    });
+  }
   document.getElementById('cat').addEventListener('change', (e) => { state.cat = e.target.value; render(); });
   document.getElementById('chain').addEventListener('change', (e) => { state.chain = e.target.value; render(); });
   document.getElementById('wl').addEventListener('change', (e) => { state.wlOnly = e.target.checked; render(); });

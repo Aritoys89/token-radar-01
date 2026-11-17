@@ -46,7 +46,7 @@ a { color: var(--cyan); }
 /* ---------- header ---------- */
 
 header.hero {
-  max-width: 1240px;
+  max-width: 1340px;
   margin: 0 auto;
   padding: 34px 22px 6px;
 }
@@ -92,9 +92,26 @@ h1 .thin { color: var(--dim); font-weight: 300; }
 .stat.hot b { color: var(--signal); }
 .stat.amber b { color: var(--amber); }
 
+/* ---------- growers strip ---------- */
+
+.growers { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 2px; }
+.growers-label {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--faint); margin-right: 2px;
+}
+.chip {
+  display: inline-flex; gap: 8px; align-items: baseline;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 99px;
+  padding: 6px 12px; font: inherit; font-size: 13px; color: var(--text); cursor: pointer;
+}
+.chip:hover { border-color: var(--signal-dim); background: var(--panel-2); }
+.chip .chip-name { font-weight: 650; }
+.chip .pos { font-family: var(--mono); font-size: 12.5px; }
+.chip .chip-cat { color: var(--faint); font-size: 12px; }
+
 /* ---------- layout ---------- */
 
-.wrap { max-width: 1240px; margin: 0 auto; padding: 10px 22px 30px; display: flex; flex-direction: column; }
+.wrap { max-width: 1340px; margin: 0 auto; padding: 10px 22px 30px; display: flex; flex-direction: column; }
 
 /* A deep link to one protocol (#/p/<slug>) opens with its detail first and the hero compact:
    the reader who followed a link to a protocol lands on that protocol, not on the top of a board. */
@@ -159,13 +176,13 @@ section.panel {
 
 .table-scroll { overflow-x: auto; }
 
-table { border-collapse: collapse; width: 100%; min-width: 880px; }
+table { border-collapse: collapse; width: 100%; min-width: 980px; }
 
 thead th {
   text-align: left;
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
   color: var(--faint);
-  padding: 10px 12px;
+  padding: 10px 10px;
   border-bottom: 1px solid var(--line);
   white-space: nowrap;
   background: var(--panel);
@@ -175,7 +192,7 @@ thead th.sortable { cursor: pointer; }
 thead th.sortable:hover { color: var(--text); }
 thead th .dir { color: var(--signal); }
 
-tbody td { padding: 9px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+tbody td { padding: 9px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 tbody tr.row { cursor: pointer; }
 tbody tr.row:hover { background: rgba(61, 255, 158, 0.045); }
 tbody tr.row.selected { background: rgba(61, 255, 158, 0.09); box-shadow: inset 3px 0 0 var(--signal); }
@@ -183,7 +200,7 @@ tbody tr.row.selected { background: rgba(61, 255, 158, 0.09); box-shadow: inset 
 td.rank { font-family: var(--mono); color: var(--faint); width: 44px; }
 td.num { text-align: right; white-space: nowrap; }
 th.num { text-align: right; }
-td.name-cell { min-width: 170px; }
+td.name-cell { min-width: 150px; }
 .pname { font-weight: 650; }
 .pslug { color: var(--faint); font-size: 12px; font-family: var(--mono); }
 td.cat { color: var(--dim); white-space: nowrap; font-size: 13.5px; }
@@ -200,12 +217,25 @@ td.chains { color: var(--dim); font-size: 13px; white-space: nowrap; }
 .neg { color: var(--red); }
 .flat { color: var(--faint); }
 
-.val-cell { min-width: 190px; }
+.val-cell { min-width: 168px; }
 .val-top { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
 .val-num { font-family: var(--mono); font-weight: 700; font-size: 15.5px; }
 .val-bar { height: 5px; background: var(--line-soft); border-radius: 3px; margin-top: 5px; overflow: hidden; }
 .val-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--signal-dim), var(--signal)); border-radius: 3px; }
 tr.tokenised .val-bar i { background: linear-gradient(90deg, #2b6a80, var(--cyan)); }
+
+.sig-cell { min-width: 84px; }
+.sig-num { font-family: var(--mono); font-weight: 700; font-size: 14.5px; color: var(--text); }
+.sig-bar { display: block; height: 5px; background: var(--line-soft); border-radius: 3px; margin-top: 5px; overflow: hidden; }
+.sig-bar i { display: block; height: 100%; background: linear-gradient(90deg, #8a6a2f, var(--amber)); border-radius: 3px; }
+
+.conf {
+  display: inline-block; font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+  padding: 1px 7px; border-radius: 99px; vertical-align: 1px;
+}
+.conf-high { background: rgba(61, 255, 158, 0.12); color: var(--signal); border: 1px solid rgba(61, 255, 158, 0.4); }
+.conf-medium { background: rgba(255, 180, 84, 0.12); color: var(--amber); border: 1px solid rgba(255, 180, 84, 0.4); }
+.conf-low { background: rgba(255, 122, 107, 0.10); color: var(--red); border: 1px solid rgba(255, 122, 107, 0.35); }
 
 .empty-note { padding: 26px 18px; color: var(--dim); }
 
@@ -238,6 +268,7 @@ h4.sub { margin: 18px 0 8px; font-size: 12px; text-transform: uppercase; letter-
 .factor .track { height: 8px; background: var(--line-soft); border-radius: 4px; overflow: hidden; }
 .factor .track i { display: block; height: 100%; background: var(--signal); }
 .factor .track i.base { background: var(--cyan); }
+.factor .track i.sig { background: var(--amber); }
 .factor .fval { text-align: right; font-family: var(--mono); }
 .factor-note { color: var(--faint); font-size: 12.5px; margin-top: 8px; }
 
@@ -281,7 +312,7 @@ table.mult { min-width: 0; max-width: 760px; }
 table.mult td, table.mult th { padding: 6px 10px; font-size: 13.5px; }
 
 footer.colophon {
-  max-width: 1240px; margin: 0 auto; padding: 8px 22px 44px;
+  max-width: 1340px; margin: 0 auto; padding: 8px 22px 44px;
   color: var(--faint); font-size: 12.5px;
 }
 footer.colophon p { margin: 4px 0; max-width: 100ch; }
